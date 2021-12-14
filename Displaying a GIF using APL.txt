@@ -1,0 +1,177 @@
+Displaying a GIF using APL
+Using PIL/Pillow in Alexa APL code (and how to display GIF files)
+YouTube video at https://youtu.be/LY4Sa5au9q0
+Instructions on how to display a GIF file on an Alexa device. The GIF is downloaded, converted to a PNG image and saved in an S3 location, which is used to display the image.
+GIF images aren’t supported by Alexa devices. Only jpg and png are.
+https://developer.amazon.com/en-US/docs/alexa/alexa-design/presentation-imagery.html
+Here we will see how to convert a GIF image and display it using APL
+There are two problems here:
+1.	To do this we will use the PIL library. If you use a lambda function, you have to download pre-compiled binaries.
+2.	To display the GIF file in an APL, we need to convert it to PNG or JPG and have an https location to read it from, and so need to save it in a S3 bucket (unless you have another https location)
+This is what we are going to see:
+ 
+1. We will use an Alexa Hosted skill to solve this problem (it loads the correct libraries), but if you want to use lambda, take a look at these references:
+https://aws.amazon.com/premiumsupport/knowledge-center/lambda-python-package-compatible/
+And: https://www.py4u.net/discuss/173764 answer 4
+2. Again an Alexa Hosted Skill helps as it provides S3 bucket access for https storage. We’ll see how to read a GIF file, save it locally and convert it to PNG then upload to a S3 bucket using a pre-signed url which we will then use in our JSON as the https source for our image to display using APL
+Instructions
+Start by creating an Alexa Hosted skill, I’ve called it GIF display, use custom model, Alexa Hosted (Python) and your region
+Select Start from Scratch and Create the skill
+Check the invocation name
+Click Interfaces and select the APL:
+ 
+Save the model and build it.
+Add the following imports and JSON code at the top of the code:
+from ask_sdk_model.interfaces.alexa.presentation.apl import ( 
+RenderDocumentDirective, ExecuteCommandsDirective, SpeakItemCommand, AutoPageCommand, HighlightMode)
+import urllib.request
+
+from utils import create_presigned_url
+
+from PIL import Image
+
+mainjson = {
+    "type": "APL",
+    "version": "1.7",
+    "license": "Copyright 2021 Amazon.com, Inc. or its affiliates blah blah",
+    "settings": {},
+    "theme": "dark",
+    "import": [],
+    "resources": [],
+    "styles": {},
+    "onMount": [],
+    "graphics": {},
+    "commands": {},
+    "layouts": {},
+    "mainTemplate": {
+        "parameters": [
+            "payload"
+        ],
+        "items": [
+            {
+                "type": "Container",
+                "items": [
+                    {
+                        "source": "imageurl",
+                        "type": "Image",
+                        "width": "100vw",
+                        "height": "100vh"
+                    }
+                ]
+            }
+        ]
+    }
+}
+
+The JSON file is for the APL display and just displays a single image.
+Modify the create_presigned_url code in utils.py to return the s3_client and bucket_name. Change the last line to:     return response, s3_client, bucket_name
+def create_presigned_url(object_name):
+    """Generate a presigned URL to share an S3 object with a capped expiration of 60 seconds
+
+    :param object_name: string
+    :return: Presigned URL as string. If error, returns None.
+    """
+    s3_client = boto3.client('s3',
+                             region_name=os.environ.get('S3_PERSISTENCE_REGION'),
+                             config=boto3.session.Config(signature_version='s3v4',s3={'addressing_style': 'path'}))
+    try:
+        bucket_name = os.environ.get('S3_PERSISTENCE_BUCKET')
+        response = s3_client.generate_presigned_url('get_object',
+                                                    Params={'Bucket': bucket_name,
+                                                            'Key': object_name},
+                                                    ExpiresIn=60*1)
+    except ClientError as e:
+        logging.error(e)
+        return None
+
+    # The response contains the presigned URL
+    	    return response, s3_client, bucket_name
+Save the file
+Now change the LaunchRequestHandler to the following. It reads a GIF file from my github resource, but you can provide your own if you want. The code saves the GIF locally, then reads it and saves as a PNG (using PIL), It then gets a presigned url and uses that to upload the PNG file into the S3 bucket. The file is then accessed by the modified JSON to display the PNG image.
+You can un-comment the code that lists the objects in the bucket if you want to.
+class LaunchRequestHandler(AbstractRequestHandler):
+    """Handler for Skill Launch."""
+    def can_handle(self, handler_input):
+        # type: (HandlerInput) -> bool
+
+        return ask_utils.is_request_type("LaunchRequest")(handler_input)
+
+    def handle(self, handler_input):
+        # type: (HandlerInput) -> Response
+        speak_output = "Hello from image display!"
+
+        # retrieve GIF file and saving locally
+        urllib.request.urlretrieve('https://raw.githubusercontent.com/jallwork/savingTemporaryAlexaFiles/main/perkin.gif', "/tmp/perkin.gif")
+        
+        imagegif= Image.open("/tmp/perkin.gif")
+        # now save image as png locally
+        imagegif.save(r'/tmp/perkin.png')
+
+        # now get presigned url and save 
+        object_name = 'S3perkin.png'
+        
+        # I've modified  create_presigned_url to return response, s3_client & bucket_name
+        image_url, s3_client, bucket_name = create_presigned_url(object_name)
+        
+        s3_client.upload_file(Filename='/tmp/perkin.png', Bucket=bucket_name, Key=object_name)
+
+        """
+        # lets' check - List objects present in the bucket
+        logger.info("listing object in bucket")
+        response = s3_client.list_objects(Bucket=bucket_name)
+        logger.info("list object response: %s" % response)
+        """
+        mainjson["mainTemplate"]["items"][0]["items"][0]["source"] = image_url
+
+        speak_output = 'loaded, saved, converted and displayed gif successfully'
+        
+        return (
+                handler_input.response_builder
+                .speak(speak_output)
+                .add_directive(
+                    RenderDocumentDirective(
+                        token="pagerToken",
+                        document=mainjson
+                    )
+                )
+                .response
+            )
+
+Finally, add the Pillow libraries to the requirements.txt file.
+Add Pillow==8.3.1
+ 
+
+Save, deploy and test your code: enable development and invoke your skill:
+ 
+This is where we all go “Aaaahhhh”
+If you get any errors, look at your cloudwatch logs (Code tab > Cloudwatch) 
+
+OK hope that helped
+
+Displaying SVG
+Similar
+Change create_presigned_url as before
+Add import
+import cairosvg
+from utils import create_presigned_url
+from urllib.request import urlopen
+import urllib.request
+Add code:
+        url = "https://www.yr.no/nb/innhold/2-2653290/meteogram.svg"
+        with urllib.request.urlopen(url) as response, open("/tmp/meteogram.svg", 'wb') as out_file:
+            data = response.read() # a `bytes` object
+            out_file.write(data)
+        
+        cairosvg.svg2png(url="/tmp/meteogram.svg", write_to="/tmp/meteogram.png")   
+
+        # now get presigned url and save in s3 bucket
+        ############### create_presigned_url HAS BEEN MODIFIED
+        object_name = 'S3meteogram.png'   
+   
+        # I've modified  create_presigned_url to return response, s3_client & bucket_name
+        meteo_url, s3_client, bucket_name = create_presigned_url(object_name)   
+    
+        s3_client.upload_file(Filename='/tmp/meteogram.png', Bucket=bucket_name, Key=object_name)
+         image_data["data"]["properties"]["values"][3]["image"] = meteo_url
+
+
